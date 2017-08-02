@@ -119,6 +119,9 @@ let getNewMode currentMode =
     | NORMAL_MODE -> BREAKER_MODE
     | BREAKER_MODE -> NORMAL_MODE
 
+let hasAlreadyBeenThere states state =
+    states |> Seq.tryFind (fun s -> s = state) |> Option.isSome
+
 // Input
 let token = (System.Console.In.ReadLine()).Split [|' '|]
 
@@ -127,11 +130,14 @@ let columnsNumber = token.[1] |> int
 
 // Compute initial data
 let map = readMap linesNumber
-let benderInitialPosition = getPositionOfCellType linesNumber map BENDER
-let suicideBoothPosition = getPositionOfCellType linesNumber map SUICIDE_BOOTH
-let teleporterPositions = getPositionsOfCellType linesNumber map TELEPORTER
+let benderInitialPosition = getPositionOfCellType columnsNumber map BENDER
+let suicideBoothPosition = getPositionOfCellType columnsNumber map SUICIDE_BOOTH
+let teleporterPositions = getPositionsOfCellType columnsNumber map TELEPORTER
 
 let mutable benderState = { Position = benderInitialPosition; Direction = SOUTH; Inversion = NOT_INVERTED; Mode = NORMAL_MODE }
+let mutable isLooping = false
+let states = new ResizeArray<BenderState>()
+let statesSinceLastBreak = new ResizeArray<BenderState>()
 
 // Partially apply functions
 let updateCellAtPositionFn = changeCellAtPosition columnsNumber map
@@ -161,9 +167,12 @@ let updateBenderAndMapFn cellType =
 updateCellAtPositionFn benderInitialPosition EMPTY
 
 // Game loop
-while benderState.Position <> suicideBoothPosition do
+while benderState.Position <> suicideBoothPosition && not isLooping do
     // Do the special action of the cell
     let currentCellType = getCellAtPositionFn benderState.Position
+
+    if currentCellType = OBSTACLE then statesSinceLastBreak.Clear() else ()
+
     updateBenderAndMapFn currentCellType
 
     // Check if Bender can continue in the same direction
@@ -181,8 +190,19 @@ while benderState.Position <> suicideBoothPosition do
     // Update Bender's direction
     updateBenderDirectionFn newDirection
 
-    // Print Bender's next direction
-    printDirection benderState.Direction
+    // Check if Bender is looping
+    if hasAlreadyBeenThere statesSinceLastBreak benderState then
+        isLooping <- true
+    else
+        // Save bender current state
+        states.Add benderState
+        statesSinceLastBreak.Add benderState
 
-    // Update Bender to its new position
-    updateBenderPositionFn benderState.Direction
+        // Update Bender to its new position
+        updateBenderPositionFn benderState.Direction
+
+if isLooping then
+    printfn "LOOP"
+else
+    // Print Bender every directions taken
+    states |> Seq.iter (fun s -> printDirection s.Direction)
