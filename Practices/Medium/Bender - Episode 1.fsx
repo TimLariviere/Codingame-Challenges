@@ -1,10 +1,13 @@
 // Types declaration
 type Direction = NORTH | EAST | SOUTH | WEST 
-type CellType = EMPTY | BENDER | SUICIDE_BOOTH | TELEPORTER | UNBREAKABLE_OBSTACLE | OBSTACLE | DIRECTION_MODIFIER of Direction
+type CellType = EMPTY | BENDER | SUICIDE_BOOTH | TELEPORTER | UNBREAKABLE_OBSTACLE | OBSTACLE | BEER | INVERTER | DIRECTION_MODIFIER of Direction
 type InversionType = NOT_INVERTED | INVERTED
 type BenderMode = NORMAL_MODE | BREAKER_MODE
 type Position = { X: int; Y: int }
 type BenderState = { Position: Position; Direction: Direction; Inversion: InversionType; Mode: BenderMode }
+
+let directionPriorities = [| SOUTH; EAST; NORTH; WEST |]
+let directionPrioritiesInverted = [| WEST; NORTH; EAST; SOUTH |]
 
 // Methods declaration
 let getPositionFromIndex lineSize i = 
@@ -26,11 +29,13 @@ let parseCell c =
     | 'T' -> TELEPORTER
     | '#' -> UNBREAKABLE_OBSTACLE
     | 'X' -> OBSTACLE
+    | 'B' -> BEER
+    | 'I' -> INVERTER
     | 'N' -> DIRECTION_MODIFIER NORTH
     | 'E' -> DIRECTION_MODIFIER EAST
     | 'S' -> DIRECTION_MODIFIER SOUTH
     | 'W' -> DIRECTION_MODIFIER WEST
-    | c -> EMPTY
+    | c -> failwith "Is this Fry?"
 
 let parseMapFromStr = Seq.mapi (fun i c -> parseCell c) >> Seq.toArray
 let readMap = readLines >> flatMapLines >> parseMapFromStr
@@ -40,6 +45,12 @@ let getPositionOfCellType lineSize map cellType =
     |> Array.findIndex (fun c -> c = cellType)
     |> getPositionFromIndex lineSize
 
+let getPositionsOfCellType lineSize map cellType =
+    map
+    |> Array.mapi (fun i c -> (i,c))
+    |> Array.filter (fun (i,c) -> c = cellType)
+    |> Array.map (fun (i,c) -> getPositionFromIndex lineSize i)
+
 let getCellAtPosition lineSize (map: CellType array) position =
     let index = getIndexFromPosition lineSize position
     map.[index]
@@ -48,11 +59,26 @@ let changeCellAtPosition lineSize (map: CellType array) position cellType =
     let index = getIndexFromPosition lineSize position
     map.[index] <- cellType
 
-let updateBenderStateIfOnDirectionModifier benderState cellType =
-    match cellType with
-    | DIRECTION_MODIFIER direction -> 
-        {benderState with Direction = direction}
-    | _ -> benderState
+let getNewX direction x =
+    match direction with
+    | NORTH | SOUTH -> x
+    | WEST -> x - 1
+    | EAST -> x + 1
+
+let getNewY direction y =
+    match direction with
+    | WEST | EAST -> y
+    | NORTH -> y - 1
+    | SOUTH -> y + 1
+
+let getNewPositionForDirection direction position =
+    let x = getNewX direction position.X
+    let y = getNewY direction position.Y
+    { X = x; Y = y }
+
+let changeBenderPosition benderState direction =
+    let newPosition = getNewPositionForDirection direction benderState.Position
+    {benderState with Position = newPosition }
 
 let printDirection direction =
     match direction with
@@ -61,8 +87,41 @@ let printDirection direction =
     | SOUTH -> printfn "SOUTH"
     | WEST -> printfn "WEST"
 
+let isBlockedByCell mode cellType =
+    match cellType with
+    | EMPTY | SUICIDE_BOOTH | TELEPORTER | BEER | INVERTER -> false
+    | DIRECTION_MODIFIER d -> false
+    | OBSTACLE when mode = BREAKER_MODE -> false
+    | UNBREAKABLE_OBSTACLE | OBSTACLE -> true
+    | BENDER -> failwith "Wait. Another Bender?"
+
+let getDirectionPriorities inversionMode =
+    match inversionMode with
+    | NOT_INVERTED -> directionPriorities
+    | INVERTED -> directionPrioritiesInverted
+
+let getNextDirection columnsNumber map inversionMode benderMode currentPosition currentDirection =
+    getDirectionPriorities inversionMode
+    |> Array.except [| currentDirection |]
+    |> Array.find (fun d -> 
+        let nextPosition = getNewPositionForDirection d currentPosition
+        let nextCellType = getCellAtPosition columnsNumber map nextPosition
+        not (isBlockedByCell benderMode nextCellType)
+    )
+
+let getNewInversion currentInversion =
+    match currentInversion with
+    | NOT_INVERTED -> INVERTED
+    | INVERTED -> NOT_INVERTED
+
+let getNewMode currentMode =
+    match currentMode with
+    | NORMAL_MODE -> BREAKER_MODE
+    | BREAKER_MODE -> NORMAL_MODE
+
 // Input
 let token = (System.Console.In.ReadLine()).Split [|' '|]
+
 let linesNumber = token.[0] |> int
 let columnsNumber = token.[1] |> int
 
@@ -70,20 +129,60 @@ let columnsNumber = token.[1] |> int
 let map = readMap linesNumber
 let benderInitialPosition = getPositionOfCellType linesNumber map BENDER
 let suicideBoothPosition = getPositionOfCellType linesNumber map SUICIDE_BOOTH
+let teleporterPositions = getPositionsOfCellType linesNumber map TELEPORTER
 
 let mutable benderState = { Position = benderInitialPosition; Direction = SOUTH; Inversion = NOT_INVERTED; Mode = NORMAL_MODE }
 
-// Partial apply functions
-let changeCellAtPositionFn = changeCellAtPosition columnsNumber map
+// Partially apply functions
+let updateCellAtPositionFn = changeCellAtPosition columnsNumber map
 let getCellAtPositionFn = getCellAtPosition columnsNumber map
-let updateBenderStateIfOnDirectionModifierFn cellType = benderState <- updateBenderStateIfOnDirectionModifier benderState cellType
+let updateBenderDirectionFn direction = benderState <- { benderState with Direction = direction }
+let updateBenderPositionFn direction = benderState <- changeBenderPosition benderState direction
+let getNextDirectionFn() = getNextDirection columnsNumber map benderState.Inversion benderState.Mode benderState.Position benderState.Direction
+
+let getOtherTeleporterPositionFn position = 
+    teleporterPositions |> Array.find (fun p -> p <> position)
+
+let updateBenderAndMapFn cellType = 
+    match cellType with
+    | DIRECTION_MODIFIER d ->
+        benderState <- {benderState with Direction = d}
+    | BEER ->
+        benderState <- {benderState with Mode = getNewMode benderState.Mode}
+    | INVERTER ->
+        benderState <- {benderState with Inversion = getNewInversion benderState.Inversion}
+    | TELEPORTER ->
+        benderState <- {benderState with Position = getOtherTeleporterPositionFn benderState.Position}
+    | OBSTACLE ->
+        updateCellAtPositionFn benderState.Position EMPTY
+    |_ -> ()
 
 // Remove bender from the map
-changeCellAtPositionFn benderInitialPosition EMPTY
+updateCellAtPositionFn benderInitialPosition EMPTY
 
-while true do
+// Game loop
+while benderState.Position <> suicideBoothPosition do
+    // Do the special action of the cell
     let currentCellType = getCellAtPositionFn benderState.Position
-    updateBenderStateIfOnDirectionModifierFn currentCellType
+    updateBenderAndMapFn currentCellType
 
+    // Check if Bender can continue in the same direction
+    let nextPosition = getNewPositionForDirection benderState.Direction benderState.Position
+    let nextCellType = getCellAtPositionFn nextPosition
+    let mustChangeDirection = isBlockedByCell benderState.Mode nextCellType
+
+    // If Bender can continue, then continue; otherwise get the next possible direction
+    let newDirection = 
+        if mustChangeDirection = false then
+            benderState.Direction
+        else
+            getNextDirectionFn()
+
+    // Update Bender's direction
+    updateBenderDirectionFn newDirection
+
+    // Print Bender's next direction
     printDirection benderState.Direction
-    ()
+
+    // Update Bender to its new position
+    updateBenderPositionFn benderState.Direction
